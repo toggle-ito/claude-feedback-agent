@@ -1,0 +1,196 @@
+name: Claude Code Plan
+
+on:
+  repository_dispatch:
+    types: [claude-plan]
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Get Issue details
+        id: issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = ${{ github.event.client_payload.issue_number }};
+            const issue = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber
+            });
+
+            core.setOutput('title', issue.data.title);
+            core.setOutput('body', issue.data.body || '');
+            core.setOutput('number', issueNumber);
+
+      - name: Run Claude Code for planning
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          ISSUE_TITLE="${{ steps.issue.outputs.title }}"
+          ISSUE_BODY="${{ steps.issue.outputs.body }}"
+          ISSUE_NUMBER="${{ steps.issue.outputs.number }}"
+
+          PROMPT="GitHub Issue #${ISSUE_NUMBER} の実装計画を立ててください。
+
+          タイトル: ${ISSUE_TITLE}
+
+          内容:
+          ${ISSUE_BODY}
+
+          以下の形式で計画を出力してください:
+
+          ## 概要
+          (何を実装するかの簡潔な説明)
+
+          ## 変更ファイル
+          - ファイル1: 変更内容
+          - ファイル2: 変更内容
+
+          ## 実装手順
+          1. ステップ1
+          2. ステップ2
+
+          ## リスク・注意点
+          - 注意点があれば記載
+
+          コードは書かず、計画のみを出力してください。"
+
+          claude -p "$PROMPT" \
+            --dangerously-skip-permissions \
+            --max-budget-usd 1 \
+            --output-format text > plan.md 2>&1 || true
+
+          cat plan.md
+
+      - name: Post plan to GitHub Issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('plan.md', 'utf8');
+            const issueNumber = ${{ steps.issue.outputs.number }};
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: `## 🤖 Claude Code 実装計画\n\n${plan}\n\n---\n*この計画はClaude Codeにより自動生成されました*`
+            });
+
+      - name: Notify Slack with plan
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+        run: |
+          ISSUE_NUMBER="${{ steps.issue.outputs.number }}"
+          ISSUE_TITLE="${{ steps.issue.outputs.title }}"
+          ISSUE_URL="https://github.com/${{ github.repository }}/issues/${ISSUE_NUMBER}"
+          PLAN=$(cat plan.md | head -c 2500)
+
+          # Escape special characters for JSON
+          PLAN_ESCAPED=$(echo "$PLAN" | jq -Rs .)
+
+          curl -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            -d "{
+              \"channel\": \"${SLACK_CHANNEL_ID}\",
+              \"text\": \"Issue #${ISSUE_NUMBER} の実装計画が完成しました\",
+              \"blocks\": [
+                {
+                  \"type\": \"header\",
+                  \"text\": {
+                    \"type\": \"plain_text\",
+                    \"text\": \"📋 実装計画\",
+                    \"emoji\": true
+                  }
+                },
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"*Issue #${ISSUE_NUMBER}:* ${ISSUE_TITLE}\"
+                  }
+                },
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": ${PLAN_ESCAPED}
+                  }
+                },
+                {
+                  \"type\": \"divider\"
+                },
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"この計画で実装を開始しますか？\"
+                  }
+                },
+                {
+                  \"type\": \"actions\",
+                  \"elements\": [
+                    {
+                      \"type\": \"button\",
+                      \"text\": {
+                        \"type\": \"plain_text\",
+                        \"text\": \"✅ 実装開始\",
+                        \"emoji\": true
+                      },
+                      \"style\": \"primary\",
+                      \"action_id\": \"approve_implementation\",
+                      \"value\": \"${{ github.repository }}|${ISSUE_NUMBER}\"
+                    },
+                    {
+                      \"type\": \"button\",
+                      \"text\": {
+                        \"type\": \"plain_text\",
+                        \"text\": \"🔄 再計画\",
+                        \"emoji\": true
+                      },
+                      \"action_id\": \"replan\",
+                      \"value\": \"${{ github.repository }}|${ISSUE_NUMBER}\"
+                    },
+                    {
+                      \"type\": \"button\",
+                      \"text\": {
+                        \"type\": \"plain_text\",
+                        \"text\": \"❌ 却下\",
+                        \"emoji\": true
+                      },
+                      \"style\": \"danger\",
+                      \"action_id\": \"reject_implementation\",
+                      \"value\": \"${{ github.repository }}|${ISSUE_NUMBER}\"
+                    },
+                    {
+                      \"type\": \"button\",
+                      \"text\": {
+                        \"type\": \"plain_text\",
+                        \"text\": \"GitHub で確認\",
+                        \"emoji\": true
+                      },
+                      \"url\": \"${ISSUE_URL}\"
+                    }
+                  ]
+                }
+              ]
+            }"

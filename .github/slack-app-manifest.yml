@@ -1,0 +1,24 @@
+display_information:
+  name: Feedback Agent
+  description: フィードバックを受け取りClaude Codeで自動実装
+  background_color: "#4A154B"
+
+features:
+  bot_user:
+    display_name: Feedback Agent
+    always_online: true
+
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - channels:read
+      - groups:read
+
+settings:
+  interactivity:
+    is_enabled: true
+    request_url: https://your-domain.com/api/v1/webhooks/slack
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
